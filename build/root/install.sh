@@ -3,23 +3,38 @@
 # exit script if return code != 0
 set -e
 
-# note do NOT download build scripts - inherited from int script with envvars common defined
+# app name from buildx arg, used in healthcheck to identify app and monitor correct process
+APPNAME="${1}"
+shift
 
-# detect image arch
-####
+# release tag name from buildx arg, stripped of build ver using string manipulation
+RELEASETAG="${1}"
+shift
 
-OS_ARCH=$(cat /etc/os-release | grep -P -o -m 1 "(?=^ID\=).*" | grep -P -o -m 1 "[a-z]+$")
-if [[ ! -z "${OS_ARCH}" ]]; then
-	if [[ "${OS_ARCH}" == "arch" ]]; then
-		OS_ARCH="x86-64"
-	else
-		OS_ARCH="aarch64"
-	fi
-	echo "[info] OS_ARCH defined as '${OS_ARCH}'"
-else
-	echo "[warn] Unable to identify OS_ARCH, defaulting to 'x86-64'"
-	OS_ARCH="x86-64"
+# target arch from buildx arg
+TARGETARCH="${1}"
+shift
+
+if [[ -z "${APPNAME}" ]]; then
+	echo "[warn] App name from build arg is empty, exiting script..."
+	exit 1
 fi
+
+if [[ -z "${RELEASETAG}" ]]; then
+	echo "[warn] Release tag name from build arg is empty, exiting script..."
+	exit 1
+fi
+
+if [[ -z "${TARGETARCH}" ]]; then
+	echo "[warn] Target architecture name from build arg is empty, exiting script..."
+	exit 1
+fi
+
+# write APPNAME and RELEASETAG to file to record the app name and release tag used to build the image
+echo -e "export APPNAME=${APPNAME}\nexport IMAGE_RELEASE_TAG=${RELEASETAG}\n" >> '/etc/image-build-info'
+
+# ensure we have the latest builds scripts
+refresh.sh
 
 # pacman packages
 ####
@@ -31,34 +46,29 @@ source upd.sh
 pacman_packages="qbittorrent-nox python geoip"
 
 # install compiled packages using pacman
-if [[ ! -z "${pacman_packages}" ]]; then
+if [[ -n "${pacman_packages}" ]]; then
+	# arm64 currently targetting aor not archive, so we need to update the system first
+	if [[ "${TARGETARCH}" == "arm64" ]]; then
+		pacman -Syu --noconfirm
+	fi
 	pacman -S --needed $pacman_packages --noconfirm
 fi
-
-# aur packages
-####
-
-# define aur packages
-aur_packages=""
-
-# call aur install script (arch user repo) - note true required due to autodl-irssi error during install
-source aur.sh
 
 # custom
 ####
 
-# this is a (temporary?) hack to prevent the error '/usr/bin/qbittorrent-nox: 
-# error while loading shared libraries: libQt5Core.so.5: cannot open shared 
-# object file: No such file or directory.' when running this container on 
+# this is a (temporary?) hack to prevent the error '/usr/bin/qbittorrent-nox:
+# error while loading shared libraries: libQt5Core.so.5: cannot open shared
+# object file: No such file or directory.' when running this container on
 # hosts with older kernels (centos, mac os). alternative workaround to this
 # is for the user to upgrade the kernel on their host.
-pacman -S binutils --needed --noconfirm
-strip --remove-section=.note.ABI-tag /usr/lib64/libQt5Core.so.5
+#pacman -S binutils --needed --noconfirm
+#strip --remove-section=.note.ABI-tag /usr/lib64/libQt5Core.so.5
 
 # container perms
 ####
 
-# define comma separated list of paths 
+# define comma separated list of paths
 install_paths="/etc/privoxy,/home/nobody"
 
 # split comma separated string into list for install paths
@@ -80,34 +90,16 @@ install_paths=$(echo "${install_paths}" | tr ',' ' ')
 # set permissions for container during build - Do NOT double quote variable for install_paths otherwise this will wrap space separated paths as a single string
 chmod -R 775 ${install_paths}
 
-# create file with contents of here doc, note EOF is NOT quoted to allow us to expand current variable 'install_paths'
-# we use escaping to prevent variable expansion for PUID and PGID, as we want these expanded at runtime of init.sh
+# In install.sh heredoc, replace the chown section:
 cat <<EOF > /tmp/permissions_heredoc
-
-# get previous puid/pgid (if first run then will be empty string)
-previous_puid=\$(cat "/root/puid" 2>/dev/null || true)
-previous_pgid=\$(cat "/root/pgid" 2>/dev/null || true)
-
-# if first run (no puid or pgid files in /tmp) or the PUID or PGID env vars are different 
-# from the previous run then re-apply chown with current PUID and PGID values.
-if [[ ! -f "/root/puid" || ! -f "/root/pgid" || "\${previous_puid}" != "\${PUID}" || "\${previous_pgid}" != "\${PGID}" ]]; then
-
-	# set permissions inside container - Do NOT double quote variable for install_paths otherwise this will wrap space separated paths as a single string
-	chown -R "\${PUID}":"\${PGID}" ${install_paths}
-
-fi
-
-# write out current PUID and PGID to files in /root (used to compare on next run)
-echo "\${PUID}" > /root/puid
-echo "\${PGID}" > /root/pgid
-
+install_paths="${install_paths}"
 EOF
 
 # replace permissions placeholder string with contents of file (here doc)
 sed -i '/# PERMISSIONS_PLACEHOLDER/{
     s/# PERMISSIONS_PLACEHOLDER//g
     r /tmp/permissions_heredoc
-}' /usr/local/bin/init.sh
+}' /usr/bin/init.sh
 rm /tmp/permissions_heredoc
 
 # env vars
@@ -131,7 +123,7 @@ EOF
 sed -i '/# ENVVARS_PLACEHOLDER/{
     s/# ENVVARS_PLACEHOLDER//g
     r /tmp/envvars_heredoc
-}' /usr/local/bin/init.sh
+}' /usr/bin/init.sh
 rm /tmp/envvars_heredoc
 
 # cleanup

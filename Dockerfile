@@ -1,5 +1,15 @@
-FROM binhex/arch-int-vpn:latest
-MAINTAINER binhex
+FROM ghcr.io/binhex/arch-int-vpn:latest
+LABEL org.opencontainers.image.authors="binhex"
+LABEL org.opencontainers.image.source="https://github.com/binhex/arch-qbittorrentvpn"
+
+# app name from buildx arg
+ARG APPNAME
+
+# release tag name from buildx arg
+ARG RELEASETAG
+
+# arch from buildx --platform, e.g. amd64
+ARG TARGETARCH
 
 # additional files
 ##################
@@ -9,9 +19,6 @@ ADD build/*.conf /etc/supervisor/conf.d/
 
 # add bash scripts to install app
 ADD build/root/*.sh /root/
-
-# add run bash scripts
-ADD run/root/*.sh /root/
 
 # add run bash scripts
 ADD run/nobody/*.sh /home/nobody/
@@ -24,28 +31,10 @@ ADD config/nobody/ /home/nobody/
 
 # make executable and run bash scripts to install app
 RUN chmod +x /root/*.sh /home/nobody/*.sh && \
-	/bin/bash /root/install.sh
-
-# docker settings
-#################
-
-# map /config to host defined config path (used to store configuration from app)
-VOLUME /config
-
-# map /data to host defined data path (used to store data from app)
-VOLUME /data
-
-# expose port for incoming connections (used only if vpn disabled)
-EXPOSE 6881
-
-# expose port for qbittorrent http
-EXPOSE 8080
-
-# expose port for privoxy
-EXPOSE 8118
+	/bin/bash /root/install.sh "${APPNAME}" "${RELEASETAG}" "${TARGETARCH}" "${TARGETARCH}"
 
 # set permissions
 #################
 
 # run script to set uid, gid and permissions
-CMD ["/bin/bash", "/usr/local/bin/init.sh"]
+CMD ["/bin/bash", "init.sh"]
